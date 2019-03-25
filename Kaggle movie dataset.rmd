@@ -1,0 +1,346 @@
+---
+title: 'APA Homework #2'
+author: Siyu Dong (47788836), Sienna Harris (47818749), Eliza Matthen (47805112), Swathi Sankar(47799522), Dalton
+  Walker (44492829)
+output:
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(fig.width=6, fig.height=3) 
+```
+## Introduction
+
+Movies are big business. Total box office revenue has been generally increasing year after year, with over $11 billion being made in 2017 in North America alone. Due to this trend, studios have been dedicating hundreds of millions of dollars a year to creating new movies. However, how can studios know if their investments will be successful? Finding a concrete, data driven answer to that question was the goal of the analysis done in this paper. 
+
+To keep interpretation simple, we categorize movies as "good" or "bad". These designations were determined from the historic movie's online ratings with the top 25% assumed to be "good". From there a logistic model was trained and utilized parameters such as movie's actors, director(s), general popularity, release month, runtime, vote count and total actor experience to predict if a movie would be good or bad.  
+
+## Data Manipulation
+The data in this analysis used three publicly available datasets from 'The Movies Database' (TMDB). After joining the data and removing non-matching movies, a core set of just over 7,000 movies was settled on. To add additional inputs, two additional columns were added to quantify the quality of actors and directors associated with a film. This was done by looking at the actor's and director's past films and averaging the ratings of those films. Therefore, an actor or a director would be rated based on their past films public perception which was important in our model. A similar process to quantify an actor's total experience by summing how many movies they had previously acted in.
+
+Perhaps the most important part of our data manipulation was how we qualified a movie as being good or bad. As mentioned previously we assigned the top 25% of movies by rating as "good". A histogram showing this distribution as well as the cut off line can be seen below.
+
+```{r echo = FALSE, include=FALSE}
+# import required libraries
+
+library(dplyr)
+library(knitr)
+library(readr)
+library(stringr)
+library(lubridate)
+library(ggplot2)
+library(tidyverse)
+library(sqldf)
+library(gridExtra)
+library(grid)
+library(tidyr)
+library(viridis)
+library(ggcorrplot)
+```
+
+```{r echo = FALSE, include=FALSE}
+# import 3 files for the prediction of movie ratings
+
+credits <- read_csv(file.choose())
+movies_md <- read_csv(file.choose())
+rating <- read_csv(file.choose())
+
+#disregard below
+genres <- read_csv(file.choose())
+```
+
+```{r echo = FALSE, include=FALSE}
+#first finding average rating for each movie (based on user ratings)
+rating_agg <- rating %>%
+  group_by(movieId) %>%
+  summarise (avgRating = round(mean(rating),1))
+
+#joining all df together and keeping only records that have ratings
+# Number od records drop from 45,466 to 7,579
+
+master <- inner_join(movies_md,rating_agg, by = c("id"="movieId")) %>%
+          inner_join(credits,by = "id")
+
+```
+
+
+```{r echo = FALSE, include=FALSE}
+# interpretting the json 
+#pulling all actors
+all_actors <- data_frame(actor_name = character(),
+                         id=integer())
+
+for (i in seq_len(nrow(master))){
+  step_1 <- str_extract_all(master[i,26],"(?<=)'name': '([^\']+)")
+  
+  step_2 <- data.frame(matrix(unlist(step_1)),stringsAsFactors=FALSE)
+  
+  step_3 <- sapply(step_2,function(x) substring(x,10))
+  
+  step_4 <- as_data_frame(step_3)
+  
+  colnames(step_4) <- c("actor_name")
+  
+  step_4$id <- as.double(rep(master[i,6],nrow(step_4)))
+  
+  all_actors <- bind_rows(all_actors,step_4)
+  
+}
+
+
+all_directors <- data_frame(director_name = character(),
+                         id=integer())
+
+for (i in seq_len(nrow(master))){
+  step_1 <- str_extract_all(master[i,27],"(?<=)'Director', 'name': '([^\']+)")
+  
+  step_2 <- data.frame(matrix(unlist(step_1)),stringsAsFactors=FALSE)
+  
+  step_3 <- sapply(step_2,function(x) substring(x,22))
+  
+  step_4 <- as_data_frame(step_3)
+  
+  colnames(step_4) <- c("director_name")
+  
+  step_4$id <- as.double(rep(master[i,6],nrow(step_4)))
+  
+  all_directors <- bind_rows(all_directors,step_4)
+  
+}
+
+
+
+```
+
+```{r echo = FALSE, include=FALSE}
+#Finding actors ratings
+actor_ratings <- left_join(all_actors,rating_agg,by = c("id"="movieId")) %>% 
+  group_by(actor_name) %>% 
+  summarise(actor_rating=mean(avgRating),number_of_movies=n())
+
+actor_ratings_by_movie <- left_join(all_actors,actor_ratings) %>% 
+  group_by(id) %>% 
+  summarise(movie_actor_rating=mean(actor_rating),actor_total_experience=sum(number_of_movies)) %>% 
+  arrange(desc(actor_total_experience))
+
+#Finding Director Rating
+director_ratings <- left_join(all_directors,rating_agg,by = c("id"="movieId")) %>% 
+  group_by(director_name) %>% 
+  summarise(director_rating=mean(avgRating),number_of_movies=n())
+
+director_ratings_by_movie <- left_join(all_directors,director_ratings) %>% 
+  group_by(id) %>% 
+  summarise(movie_director_rating=mean(director_rating),
+            director_total_experience=sum(number_of_movies))
+
+
+#Filtering down for regression
+for_regression <- inner_join(master,actor_ratings_by_movie) %>% 
+  inner_join(director_ratings_by_movie) %>% 
+  mutate(release_month=month(release_date),release_year=year(release_date)) %>% 
+  select(id,avgRating,movie_actor_rating,movie_director_rating,popularity,
+         release_month,release_year,runtime,vote_count,actor_total_experience) %>% 
+  filter(!is.na(runtime))
+```
+
+```{r, echo = FALSE}
+ggplot() +
+  geom_histogram(data=for_regression,aes(avgRating),
+               bins=20,fill="blue",color="black",alpha=.2)+
+  geom_vline(xintercept=3.6) 
+```
+
+## Brief Data Exploration
+To learn more about the available parameters for our model we decided to learn more about each of them. First, we looked at histograms for movie runtime and movie rating from online users (out of 10). These plots are seen below.
+
+```{r echo = FALSE }
+master_manip <- master %>% 
+  filter(runtime<250)
+
+grid.arrange(
+  ggplot() +
+    geom_histogram(data=master_manip, aes(runtime),
+                   bins=35,fill="blue",color="black") +
+    labs(x="Runtime (in minutes)"),
+  
+  ggplot() +
+    geom_histogram(data=master,aes(vote_average),
+                   bins=35,fill="blue",color="black") +
+    labs(x="Rating (out of 10)"),
+  nrow = 1)
+```
+
+To look into the potential trend between runtime and rating further we plotted a scatter plot of the two below. 
+ 
+```{r echo = FALSE, message=FALSE}
+plot_save <- ggplot(data=master,aes(x=runtime,y=avgRating))+ geom_point(alpha=0.5,color= 'skyblue') +
+  xlim(20,500)+scale_fill_viridis(discrete=F)+ geom_smooth(color='red',se=FALSE) + 
+  labs(title='Avg rating vs. Runtime',x='runtime(in minutes)',y='Average Rating')
+
+suppressWarnings(print(plot_save))
+```
+
+From the graph above we can see that approximately 90% of the movies have a runtime between 80 and 150 minutes. Additionally, although the trend is hazy, it seems that longer movies have lower ratings. This is possibly due to long movies losing viewer interest or the movies actually being documentaries with droning, boring content.
+
+Next we looked at the number of movies released per year. Interestingly, we observed a dip in 2008 which correspond to the financial crisis. Afterwards, movie production slowly recovered until the maximum in 2012.
+
+```{r echo=FALSE}
+## Number of movies per year - bar
+by_year_bar <- master %>% 
+  mutate(release_year = substr(release_date,1,4))
+  
+by_year_bar <- by_year_bar %>% 
+  filter(release_year >= 1900) %>% 
+  group_by(release_year) %>% 
+  summarise(movies = n()) %>% 
+  arrange(desc(release_year))
+
+ggplot(by_year_bar, aes(release_year)) +
+  geom_bar(aes(weight=movies), fill = "blue", color = "black") +
+  scale_x_discrete(limits = by_year_bar$release_year, breaks = seq(1900,2018,10)) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5)) 
+  
+```
+
+Another set of trends we explored were based on the month a movie was released. Below bar charts are shown with the total number of releases per month and the average rating of movies released in each month. 
+
+```{r echo = FALSE  }
+knitr::opts_chunk$set(fig.width=6, fig.height=3)
+no_movies <- master %>%
+  mutate(month= month(release_date), year = year(release_date))%>%
+  filter(year >= 1990) %>%
+  group_by(month )%>%
+  filter(month!= "NA") %>%
+  summarise(no_ofmovies= n(), avgRating_month = round(mean(avgRating),2))
+
+label_names <- c("Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec")
+
+p1<- ggplot(no_movies ,aes(month ,no_ofmovies )) + geom_bar(stat= "identity", fill="steelblue" , alpha=.5)+
+  geom_text(aes(label=no_ofmovies), vjust=-0.3, size=2.5)+ 
+  scale_y_continuous(name="Number Of Movies")+
+  scale_x_discrete(limits = c(1:12)) 
+  
+p2<-ggplot(no_movies ,aes(month ,avgRating_month )) + geom_bar(stat= "identity", fill="Green" , alpha=.5)+
+  geom_text(aes(label=avgRating_month), vjust=-0.3, size=2.5)+
+  coord_cartesian(ylim=c(3,3.3)) +scale_y_continuous(name="Average Rating")+
+  scale_x_discrete(limits = c(1:12)) 
+
+
+grid.arrange(p1, p2,  nrow = 1, top="Month View")
+  
+```
+
+These plots show that late summer months as well as the holiday season (December and January) have the most releases.However, the number of movies released per month does not impact the average rating per month. In fact, even though September had the most releases it had the second lowest average rating by month.
+
+
+The final trend we looked at was the genre of the movies in our data set. As seen below, Drama were the most common movie type!
+
+```{r echo = FALSE}
+p6_d <- genres %>%
+  group_by(genre) %>%
+  count() %>%
+  arrange(desc(n)) %>%
+  head(n=5)
+
+ggplot(p6_d, aes(genre)) +
+  geom_bar(aes(weight=n), fill = " skyblue", color = "black") +
+  theme(axis.title.x = element_blank()) +
+  geom_text(aes(x=genre, y=n,label=n), position=position_dodge(width=0.9), vjust=-0.25)
+  
+```
+
+## Logistic Regression 
+With the information from exploring the data in mind, we ran our regression to model if a movie would be good or bad. We partitioned the data and used 75% as training set and 25% as a testing set. This would assure that the model would not simply memorize the data and would hopefully avoid overfitting. That being said, to create the model itself we utilized 6 inputs (actor rating, director rating, total user vote count on a movie, movie popularity, movie run time, and actor total experience) along with 12 dummy variables for each month of the year when a movie could be released. 
+
+After running the model, 7 of the 18 total inputs were found to be significant. Additionally, when the model was used to predict movies in the testing data set, it predicted with an 89.3% accuracy. The confusion matrix is shown below (0 is a predicted bad movie and 1 is a predicted good movie).
+
+```{r echo = FALSE, include=FALSE}
+#finding good/bad movie cutoff and visualizing
+quantile(for_regression$avgRating,c(0.25,0.5,0.75))
+
+
+#adding good/bad column to df (hard coded 3.6 as cutoff)
+for_regression <- for_regression %>% 
+  mutate(good_or_bad = case_when(
+    avgRating >= 3.6 ~ 1,
+    TRUE             ~ 0))
+```
+
+```{r echo = FALSE, include=FALSE}
+# Partitioning into training/testing + setting seed to make reproducable 
+sample_size <- floor(0.75 * nrow(for_regression))
+
+set.seed(123)
+training_rows <- sample(seq_len(nrow(for_regression)), size = sample_size)
+
+to_train <- for_regression[training_rows, ]
+to_test <- for_regression[-training_rows, ]
+
+#doing logistic regression
+regression_1 <- glm(good_or_bad~1,to_train,family = binomial)
+int <- coef(regression_1)[1]
+exp(int)/(1+exp(int))
+mean(to_train$good_or_bad==1)
+
+#Regression attempt #1
+regression_2 <- glm(good_or_bad ~ movie_actor_rating + movie_director_rating
+                    + popularity + as.factor(release_month) + release_year + runtime + vote_count
+                    + actor_total_experience,data= to_train,family = binomial)
+
+summary(regression_2)
+
+
+#removing information you wouldn't have for a new movie
+regression_3 <- glm(good_or_bad ~ movie_actor_rating + movie_director_rating + vote_count + popularity
+                    + as.factor(release_month) + runtime + actor_total_experience
+                    ,data= to_train,family = binomial)
+
+summary(regression_3)
+
+```
+
+```{r echo = FALSE, include=FALSE}
+#quantifying goodness of fit below
+#using model on data to predict good/bad
+pred <-  predict(regression_3,to_test, type="response")
+pred[pred>=0.5] <- "Good_Score"
+pred[pred!= "Good_Score"] <- "Bad_Score"
+
+#confusion matrix from model above
+classmatrix <- table(pred,to_test$good_or_bad)
+#correctly classified (accuracy)
+sum(diag(classmatrix))/sum(classmatrix)
+```
+
+```{r, echo= FALSE}
+classmatrix
+```
+
+## Conclusion 
+
+After running the regression model, we see certain significant features which increase the likelihood of the movie being a success or "good". For example, releases during the holiday season increase the likelihood of a better rating. Also having a more experienced cast with a higher average rating impacts the rating the most.
+
+If we want to remove the confound component for this model we can filter for movies produced in the United States but this would lead to a loss of data and hence chose to ignore it. Filtering of this sort from our analysis removes confounders caused by country in which the movie was produced.
+
+In conclusion, we discovered our model could predict a partitioned set of past movies to be "good" or "bad" to an 89.3% accuracy. We could also determine from our model which factors directly influence if a movie is going to be 'good or bad'. When we see the positive coefficient it suggests a positive relationship. For example `movie_actor_rating` shows that when the average rating of the cast increases then the movie has a better chance of being classified as a good movie. 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
